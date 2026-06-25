@@ -1,0 +1,77 @@
+name: Sync Fork with Upstream
+
+# Keeps this fork's default branch (main) in sync with the upstream
+# repository (mattpocock/skills) by merging upstream's main once a day.
+# You can also trigger it on demand from the Actions tab → "Run workflow".
+
+on:
+  schedule:
+    # Daily at 02:00 UTC. Edit this cron expression to change the time.
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+# Allow the built-in GITHUB_TOKEN to push the merged changes back to main.
+permissions:
+  contents: write
+
+# Never let two syncs overlap.
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/mattpocock/skills.git
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          # Scheduled / dispatched runs check out the default branch (main).
+          fetch-depth: 0 # Full history is required for a clean merge.
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null \
+            || git remote set-url upstream "$UPSTREAM_REPO"
+
+      - name: Fetch upstream
+        run: git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+      - name: Merge upstream changes
+        id: merge
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+            echo "Already up to date with upstream/$UPSTREAM_BRANCH."
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
+            echo "synced=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort || true
+            echo "::error::Merge conflict while syncing upstream/$UPSTREAM_BRANCH into main. Resolve it manually, then re-run."
+            exit 1
+          fi
+
+      - name: Push merged changes
+        if: steps.merge.outputs.synced == 'true'
+        run: git push origin HEAD:main
+
+      - name: Job summary
+        if: always()
+        run: |
+          case "${{ steps.merge.outputs.synced }}" in
+            true)  echo "✅ Merged upstream/$UPSTREAM_BRANCH and pushed to main." >> "$GITHUB_STEP_SUMMARY" ;;
+            false) echo "ℹ️ Already up to date — nothing to sync." >> "$GITHUB_STEP_SUMMARY" ;;
+            *)     echo "❌ Sync did not complete. See the logs above." >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
